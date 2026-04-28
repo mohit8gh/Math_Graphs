@@ -1,4 +1,4 @@
-# MathViz - Equation Visualizer
+# Mohit Graphs - Equation Visualizer
 
 A sleek, interactive web-based tool for visualizing mathematical equations in real-time. Built with HTML5 Canvas, Math.js, and Chart.js.
 
@@ -19,7 +19,7 @@ A sleek, interactive web-based tool for visualizing mathematical equations in re
 
 ## Supported Functions
 
-MathViz supports a wide range of mathematical expressions using Math.js:
+Mohit Graphs supports a wide range of mathematical expressions using Math.js:
 
 - Basic arithmetic: `+`, `-`, `*`, `/`, `^`
 - Trigonometric: `sin()`, `cos()`, `tan()`
