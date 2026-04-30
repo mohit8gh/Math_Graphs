@@ -379,6 +379,7 @@
         <div class="export-item" onclick="exportSVGFile()">Export as SVG</div>
       </div>
     </div>
+    <button class="header-btn" onclick="toggleInfo()" title="About this app">ℹ Info</button>
     <button class="theme-toggle" onclick="toggleTheme()" title="Toggle theme">☀</button>
   </header>
 
@@ -389,8 +390,7 @@
       <div class="sidebar-section">
         <div class="sidebar-label">New Equation</div>
         <div class="eq-input-wrap">
-          <span class="eq-prefix">y =</span>
-          <input class="eq-input" id="mainInput" placeholder="x^2, sin(x), ..." 
+          <input class="eq-input" id="mainInput" placeholder="y = x^2, y = sin(x), ..." 
                  onkeydown="handleInputKey(event)" oninput="handleInputChange()">
         </div>
         <div style="margin-top:8px;font-family:'Space Mono',monospace;font-size:11px;color:var(--muted);min-height:16px" id="inputPreview"></div>
@@ -455,6 +455,40 @@
 </div>
 
 <div id="toast">✓ <span id="toastMsg"></span></div>
+
+<!-- Info Modal -->
+<div id="infoModal" style="display:none;position:fixed;inset:0;z-index:300;background:rgba(0,0,0,0.6);backdrop-filter:blur(4px);align-items:center;justify-content:center;" onclick="closeInfoOnBg(event)">
+  <div style="background:var(--surface);border:1px solid var(--border2);border-radius:16px;padding:36px 32px;max-width:420px;width:90%;position:relative;box-shadow:0 24px 60px rgba(0,0,0,0.5);animation:infoIn 0.25s cubic-bezier(0.16,1,0.3,1)">
+    <button onclick="toggleInfo()" style="position:absolute;top:14px;right:14px;background:var(--surface2);border:1px solid var(--border2);color:var(--muted);width:28px;height:28px;border-radius:6px;cursor:pointer;font-size:14px;display:flex;align-items:center;justify-content:center;transition:all 0.15s" onmouseover="this.style.background='#ff4444';this.style.color='white'" onmouseout="this.style.background='var(--surface2)';this.style.color='var(--muted)'">✕</button>
+    <div style="font-size:28px;font-weight:800;letter-spacing:-1.5px;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;margin-bottom:4px">Mohit Graphs</div>
+    <div style="font-family:'Space Mono',monospace;font-size:11px;color:var(--muted);letter-spacing:2px;text-transform:uppercase;margin-bottom:20px">Equation Visualizer</div>
+    <p style="font-size:14px;line-height:1.7;color:var(--text);margin-bottom:16px">A powerful, real-time interactive equation visualizer. Plot any mathematical expression as a function of <span style="font-family:'Space Mono',monospace;color:var(--accent)">x</span>, explore graphs with pan & zoom, use dynamic variable sliders, and export your work as PNG or SVG.</p>
+    <div style="background:var(--surface2);border:1px solid var(--border);border-radius:10px;padding:14px 16px;margin-bottom:20px">
+      <div style="font-size:11px;font-weight:700;letter-spacing:2px;text-transform:uppercase;color:var(--muted);margin-bottom:10px">Features</div>
+      <div style="font-size:13px;color:var(--text);line-height:1.9">
+        ✦ Multi-equation plotting with colors<br>
+        ✦ Real-time expression validation<br>
+        ✦ Dynamic sliders for variables (a, b, …)<br>
+        ✦ Pan, zoom & viewport controls<br>
+        ✦ Math keyboard for easy input<br>
+        ✦ Export as PNG or SVG<br>
+        ✦ Save &amp; load equations locally
+      </div>
+    </div>
+    <div style="border-top:1px solid var(--border);padding-top:16px;display:flex;align-items:center;justify-content:space-between">
+      <div>
+        <div style="font-size:11px;color:var(--muted);letter-spacing:1px;text-transform:uppercase;margin-bottom:3px">Created by</div>
+        <div style="font-size:16px;font-weight:700;background:linear-gradient(135deg,var(--accent),var(--accent3));-webkit-background-clip:text;-webkit-text-fill-color:transparent;letter-spacing:0.5px">MOHIT MILAN</div>
+      </div>
+    </div>
+  </div>
+</div>
+<style>
+  @keyframes infoIn {
+    from { opacity:0; transform:scale(0.92) translateY(16px); }
+    to   { opacity:1; transform:scale(1) translateY(0); }
+  }
+</style>
 
 <script>
 // ============================================================
@@ -528,11 +562,20 @@ function handleInputKey(e) {
   if (e.key === 'Enter') addCurrentEquation();
 }
 
+// Parse full equation like "y = x^2" or bare "x^2" — returns just the RHS expression
+function parseEquationInput(raw) {
+  const s = raw.trim();
+  const match = s.match(/^[yY]\s*=\s*(.+)$/);
+  if (match) return match[1].trim();
+  return s;
+}
+
 let inputTimer = null;
 function handleInputChange() {
-  const v = document.getElementById('mainInput').value.trim();
+  const raw = document.getElementById('mainInput').value.trim();
   const prev = document.getElementById('inputPreview');
-  if (!v) { prev.textContent = ''; return; }
+  if (!raw) { prev.textContent = ''; return; }
+  const v = parseEquationInput(raw);
   try {
     math.parse(v.replace(/\^/g, '^'));
     prev.textContent = '✓ Valid expression';
@@ -541,7 +584,6 @@ function handleInputChange() {
     prev.textContent = '✗ ' + err.message.split('\n')[0].slice(0,40);
     prev.style.color = '#ff6b6b';
   }
-  // Real-time preview: update the "active" eq if editing
   if (activeEqIndex >= 0) {
     equations[activeEqIndex].expr = v;
     clearTimeout(inputTimer);
@@ -550,7 +592,9 @@ function handleInputChange() {
 }
 
 function addCurrentEquation() {
-  const v = document.getElementById('mainInput').value.trim();
+  const raw = document.getElementById('mainInput').value.trim();
+  if (!raw) return;
+  const v = parseEquationInput(raw);
   if (!v) return;
   const color = COLORS[equations.length % COLORS.length];
   equations.push({ expr: v, color, visible: true, id: Date.now() });
@@ -578,7 +622,7 @@ function toggleEquation(i) {
 
 function editEquation(i) {
   activeEqIndex = i;
-  document.getElementById('mainInput').value = equations[i].expr;
+  document.getElementById('mainInput').value = 'y = ' + equations[i].expr;
   document.getElementById('mainInput').focus();
   document.getElementById('inputPreview').textContent = '';
 }
@@ -1050,6 +1094,18 @@ function exportSVGFile() {
   link.href = URL.createObjectURL(blob);
   link.click();
   showToast('SVG exported!');
+}
+
+// ============================================================
+// Info Modal
+// ============================================================
+function toggleInfo() {
+  const m = document.getElementById('infoModal');
+  const isOpen = m.style.display === 'flex';
+  m.style.display = isOpen ? 'none' : 'flex';
+}
+function closeInfoOnBg(e) {
+  if (e.target === document.getElementById('infoModal')) toggleInfo();
 }
 
 // ============================================================
