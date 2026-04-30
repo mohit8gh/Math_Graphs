@@ -562,12 +562,80 @@ function handleInputKey(e) {
   if (e.key === 'Enter') addCurrentEquation();
 }
 
-// Parse full equation like "y = x^2" or bare "x^2" — returns just the RHS expression
+// Add implicit multiplication: xy → x*y, 2x → 2*x, x( → x*(, )( → )*(
+// Protected function/constant names are swapped out first so they aren't broken
+function addImplicitMult(expr) {
+  // Longest-first so 'asin' is matched before 'sin', etc.
+  const knownFns = ['asin','acos','atan2','atan','sinh','cosh','tanh','sqrt','cbrt','ceil','floor','round','sign','log2','log10','log','exp','abs','sin','cos','tan','max','min','pi'];
+
+  const tokens = [];
+  let s = expr;
+
+  // Replace known tokens with unique placeholders like §0§, §1§ …
+  knownFns.forEach((fn, i) => {
+    const re = new RegExp('(?<![a-zA-Z])' + fn + '(?![a-zA-Z])', 'g');
+    s = s.replace(re, () => { tokens.push(fn); return '\u00A7' + (tokens.length - 1) + '\u00A7'; });
+  });
+
+  // Apply implicit multiplication on the protected string
+  // 1. digit → letter or placeholder-start (§)
+  s = s.replace(/(\d)([\u00A7a-zA-Z])/g, '$1*$2');
+  // 2. letter or digit or placeholder-end (§N§) → '(' : only if NOT a placeholder (§ char signals end of a known fn placeholder, which means it IS a function call like sin( )
+  s = s.replace(/([a-zA-Z\d])\(/g, '$1*(');
+  // Re-protect: placeholder-digit-§ followed by ( should not get a * (it's a function call)
+  s = s.replace(/(\u00A7\d+\u00A7)\*\(/g, '$1(');
+  // 3. ')' followed by letter, digit, '(' or placeholder-start
+  s = s.replace(/\)([\u00A7a-zA-Z\d(])/g, ')*$1');
+  // 4. adjacent plain letters: xy → x*y
+  s = s.replace(/([a-zA-Z])([a-zA-Z])/g, '$1*$2');
+
+  // Restore placeholders
+  tokens.forEach((fn, i) => {
+    s = s.split('\u00A7' + i + '\u00A7').join(fn);
+  });
+
+  return s;
+}
+
+// Check if expression contains a standalone 'y' variable (not part of a longer name)
+function containsStandaloneY(expr) {
+  return /(?<![a-zA-Z])y(?![a-zA-Z])/i.test(expr);
+}
+
+// Parse full equation — handles "y = expr", "x = expr", bare "expr", "lhs = rhs"
+// Returns the RHS expression string (y is solved for), or an implicit-solve object.
 function parseEquationInput(raw) {
   const s = raw.trim();
-  const match = s.match(/^[yY]\s*=\s*(.+)$/);
-  if (match) return match[1].trim();
-  return s;
+
+  const eqMatch = s.match(/^(.+?)\s*=\s*(.+)$/);
+  if (eqMatch) {
+    const lhs = eqMatch[1].trim();
+    const rhs = eqMatch[2].trim();
+
+    // Simple cases: one side is just y
+    if (/^[yY]$/.test(lhs)) return addImplicitMult(rhs);
+    if (/^[yY]$/.test(rhs)) return addImplicitMult(lhs);
+
+    const lhsProcessed = addImplicitMult(lhs);
+    const rhsProcessed = addImplicitMult(rhs);
+    const combined = '(' + lhsProcessed + ') - (' + rhsProcessed + ')';
+
+    const lhsHasY = containsStandaloneY(lhs);
+    const rhsHasY = containsStandaloneY(rhs);
+
+    if (!lhsHasY && !rhsHasY) {
+      // No y at all: e.g. "x^2 = 4" — return lhs - rhs, plot as curve where it = 0
+      // Since the plotter does y = f(x), just return lhs expression (most useful)
+      return lhsProcessed;
+    }
+
+    // y is present — solve numerically per x using binary search in drawEquation
+    // Store as implicit equation object: lhs - rhs = 0, solve for y
+    return { implicit: true, expr: combined };
+  }
+
+  // No "=" — bare expression, plot as y = expr
+  return addImplicitMult(s);
 }
 
 let inputTimer = null;
@@ -576,8 +644,9 @@ function handleInputChange() {
   const prev = document.getElementById('inputPreview');
   if (!raw) { prev.textContent = ''; return; }
   const v = parseEquationInput(raw);
+  const exprStr = (v && v.implicit) ? v.expr : v;
   try {
-    math.parse(v.replace(/\^/g, '^'));
+    math.parse(exprStr);
     prev.textContent = '✓ Valid expression';
     prev.style.color = 'var(--accent3)';
   } catch(err) {
@@ -596,6 +665,8 @@ function addCurrentEquation() {
   if (!raw) return;
   const v = parseEquationInput(raw);
   if (!v) return;
+  // Attach original raw text for display/editing
+  if (v && v.implicit) v.raw = raw;
   const color = COLORS[equations.length % COLORS.length];
   equations.push({ expr: v, color, visible: true, id: Date.now() });
   animProgress[equations.length - 1] = 0;
@@ -622,7 +693,8 @@ function toggleEquation(i) {
 
 function editEquation(i) {
   activeEqIndex = i;
-  document.getElementById('mainInput').value = 'y = ' + equations[i].expr;
+  const eq = equations[i];
+  document.getElementById('mainInput').value = (eq.expr && eq.expr.raw) ? eq.expr.raw : (eq.expr && eq.expr.implicit ? eq.expr.expr : eq.expr);
   document.getElementById('mainInput').focus();
   document.getElementById('inputPreview').textContent = '';
 }
@@ -635,7 +707,7 @@ function renderEqList() {
     item.className = 'eq-item' + (eq.visible ? '' : ' hidden');
     item.innerHTML = `
       <div class="eq-color-dot" style="background:${eq.color}"></div>
-      <span class="eq-item-text ${isValidExpr(eq.expr) ? '' : 'error'}" title="${eq.expr}" onclick="editEquation(${i})">y = ${eq.expr}</span>
+      <span class="eq-item-text ${isValidExprObj(eq.expr) ? '' : 'error'}" title="${eqDisplayLabel(eq.expr)}" onclick="editEquation(${i})">${eqDisplayLabel(eq.expr)}</span>
       <button class="eq-vis-btn" onclick="toggleEquation(${i})" title="Toggle">${eq.visible ? '👁' : '◯'}</button>
       <button class="eq-del-btn" onclick="removeEquation(${i})" title="Delete">✕</button>
     `;
@@ -647,6 +719,14 @@ function renderEqList() {
 function isValidExpr(expr) {
   try { math.parse(expr); return true; } catch { return false; }
 }
+function isValidExprObj(expr) {
+  const s = (expr && expr.implicit) ? expr.expr : expr;
+  try { math.parse(s); return true; } catch { return false; }
+}
+function eqDisplayLabel(expr) {
+  if (expr && expr.implicit) return expr.raw || expr.expr;
+  return 'y = ' + expr;
+}
 
 // ============================================================
 // Slider detection
@@ -655,9 +735,10 @@ function detectSliders() {
   const allVars = new Set();
   equations.forEach(eq => {
     try {
-      const node = math.parse(eq.expr);
+      const exprStr = (eq.expr && eq.expr.implicit) ? eq.expr.expr : eq.expr;
+      const node = math.parse(exprStr);
       node.traverse(n => {
-        if (n.isSymbolNode && !['x','pi','e','sin','cos','tan','log','sqrt','abs','cbrt'].includes(n.name)) {
+        if (n.isSymbolNode && !['x','y','pi','e','sin','cos','tan','log','sqrt','abs','cbrt'].includes(n.name)) {
           allVars.add(n.name);
         }
       });
@@ -797,6 +878,23 @@ function drawGrid(W, H, isDark) {
 }
 
 function drawEquation(eq, W, H, progress) {
+  ctx.strokeStyle = eq.color;
+  ctx.lineWidth = 2.5;
+  ctx.lineJoin = 'round';
+  ctx.lineCap = 'round';
+  ctx.shadowColor = eq.color;
+  ctx.shadowBlur = 8;
+
+  if (eq.expr && eq.expr.implicit) {
+    // Implicit equation: f(x,y) = 0 — use marching squares to find contour
+    drawImplicit(eq, W, H, progress);
+  } else {
+    drawExplicit(eq, W, H, progress);
+  }
+  ctx.shadowBlur = 0;
+}
+
+function drawExplicit(eq, W, H, progress) {
   const samples = Math.max(W * 2, 800);
   const dx = (viewport.xMax - viewport.xMin) / samples;
   let compiled;
@@ -813,37 +911,89 @@ function drawEquation(eq, W, H, progress) {
     points.push({ x, y });
   }
 
-  // Apply animation progress
   const drawCount = Math.floor(points.length * progress);
-
   ctx.beginPath();
-  ctx.strokeStyle = eq.color;
-  ctx.lineWidth = 2.5;
-  ctx.lineJoin = 'round';
-  ctx.lineCap = 'round';
-
-  // Glow effect
-  ctx.shadowColor = eq.color;
-  ctx.shadowBlur = 8;
-
   let penDown = false;
   let prevY = NaN;
-
   for (let i = 0; i < drawCount; i++) {
     const p = points[i];
     if (isNaN(p.y) || !isFinite(p.y)) { penDown = false; prevY = NaN; continue; }
-
     const sp = worldToScreen(p.x, p.y);
-    // Discontinuity detection
-    if (penDown && Math.abs(p.y - prevY) > (viewport.yMax - viewport.yMin) * 1.5) {
-      penDown = false;
-    }
+    if (penDown && Math.abs(p.y - prevY) > (viewport.yMax - viewport.yMin) * 1.5) penDown = false;
     if (!penDown) { ctx.moveTo(sp.x, sp.y); penDown = true; }
     else ctx.lineTo(sp.x, sp.y);
     prevY = p.y;
   }
   ctx.stroke();
-  ctx.shadowBlur = 0;
+}
+
+function drawImplicit(eq, W, H, progress) {
+  // Marching squares: evaluate f(x,y) on a grid, draw segments where f changes sign
+  // Resolution: ~2px per cell gives good quality without being too slow
+  const gridW = Math.floor(W / 2);
+  const gridH = Math.floor(H / 2);
+  const dx = (viewport.xMax - viewport.xMin) / gridW;
+  const dy = (viewport.yMax - viewport.yMin) / gridH;
+
+  let compiled;
+  try { compiled = math.compile(eq.expr.expr); } catch { return; }
+  // Reuse a single scope object to avoid GC pressure in the tight loop
+  const scope = { ...sliders, pi: Math.PI, e: Math.E, x: 0, y: 0 };
+
+  // Build grid of f values
+  const grid = new Float64Array((gridW + 1) * (gridH + 1));
+  for (let row = 0; row <= gridH; row++) {
+    scope.y = viewport.yMin + row * dy;
+    for (let col = 0; col <= gridW; col++) {
+      scope.x = viewport.xMin + col * dx;
+      let val;
+      try { val = compiled.evaluate(scope); } catch { val = NaN; }
+      grid[row * (gridW + 1) + col] = (typeof val === 'number' && isFinite(val)) ? val : NaN;
+    }
+  }
+
+  const get = (row, col) => grid[row * (gridW + 1) + col];
+
+  // Apply animation: only draw up to progress fraction of columns
+  const drawCols = Math.floor(gridW * progress);
+
+  ctx.beginPath();
+  for (let row = 0; row < gridH; row++) {
+    for (let col = 0; col < Math.min(drawCols, gridW); col++) {
+      const f00 = get(row, col);
+      const f10 = get(row, col + 1);
+      const f01 = get(row + 1, col);
+      const f11 = get(row + 1, col + 1);
+      if (isNaN(f00) || isNaN(f10) || isNaN(f01) || isNaN(f11)) continue;
+
+      // World coords of cell corners
+      const x0 = viewport.xMin + col * dx;
+      const x1 = x0 + dx;
+      const y0 = viewport.yMin + row * dy;
+      const y1 = y0 + dy;
+
+      // Collect zero-crossing points on each edge (linear interpolation)
+      const edges = [];
+      if (f00 * f10 < 0) edges.push(interp2d(x0, y0, f00, x1, y0, f10));
+      if (f01 * f11 < 0) edges.push(interp2d(x0, y1, f01, x1, y1, f11));
+      if (f00 * f01 < 0) edges.push(interp2d(x0, y0, f00, x0, y1, f01));
+      if (f10 * f11 < 0) edges.push(interp2d(x1, y0, f10, x1, y1, f11));
+
+      // Draw a line segment between every pair of crossing points
+      for (let i = 0; i + 1 < edges.length; i += 2) {
+        const s0 = worldToScreen(edges[i].x, edges[i].y);
+        const s1 = worldToScreen(edges[i + 1].x, edges[i + 1].y);
+        ctx.moveTo(s0.x, s0.y);
+        ctx.lineTo(s1.x, s1.y);
+      }
+    }
+  }
+  ctx.stroke();
+}
+
+function interp2d(x0, y0, f0, x1, y1, f1) {
+  const t = f0 / (f0 - f1);
+  return { x: x0 + t * (x1 - x0), y: y0 + t * (y1 - y0) };
 }
 
 function niceStep(range, targetCount) {
@@ -1071,6 +1221,7 @@ function exportSVGFile() {
     const samples = W * 2;
     const dx = (viewport.xMax - viewport.xMin) / samples;
     let compiled;
+    if (eq.expr && eq.expr.implicit) return; // skip implicit in SVG export
     try { compiled = math.compile(eq.expr); } catch { return; }
     const scope = { ...sliders, pi: Math.PI, e: Math.E };
     let d = ''; let penDown = false; let prevY = NaN;
